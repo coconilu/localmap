@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "default capability",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:20190", "http://localmap.test"]
+  },
+  "permissions": ["core:default", "shell:allow-open"]
+}

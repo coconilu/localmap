@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LocalMap — 本地域名映射管理</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e9ef; --muted: #8b93a3; --accent: #4f8cff; --accent2: #3b6fd4;
+    --green: #34c77b; --red: #e5534b; --yellow: #d9a13b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; min-height: 100vh; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 24px; }
+  header h1 { font-size: 22px; font-weight: 600; letter-spacing: .5px; }
+  header .ver { color: var(--muted); font-size: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card .label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .card .value { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; word-break: break-all; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.ok { background: var(--green); } .dot.bad { background: var(--red); } .dot.warn { background: var(--yellow); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+  .panel h2 { font-size: 15px; margin-bottom: 14px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  td .domain { font-weight: 600; color: var(--accent); }
+  td .target { color: var(--muted); font-family: Consolas, monospace; font-size: 13px; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; }
+  .badge.up { background: rgba(52,199,123,.12); color: var(--green); }
+  .badge.down { background: rgba(229,83,75,.12); color: var(--red); }
+  button { cursor: pointer; border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+           border-radius: 8px; padding: 6px 12px; font-size: 13px; transition: background .15s; }
+  button:hover { background: #262c38; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent2); }
+  button.danger { color: var(--red); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row-actions { display: flex; gap: 6px; }
+  .add-form { display: flex; gap: 10px; flex-wrap: wrap; }
+  .add-form input { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+                    padding: 8px 12px; font-size: 13px; outline: none; }
+  .add-form input:focus { border-color: var(--accent); }
+  .add-form input.domain { flex: 1; min-width: 200px; }
+  .add-form input.target { flex: 1; min-width: 180px; font-family: Consolas, monospace; }
+  .edit-in { background: var(--panel2); border: 1px solid var(--accent); border-radius: 6px; color: var(--text);
+             padding: 5px 9px; font-size: 13px; outline: none; width: 100%; }
+  .edit-in.mono { font-family: Consolas, monospace; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .task-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .empty { color: var(--muted); text-align: center; padding: 28px 0; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel2);
+           border: 1px solid var(--border); border-radius: 8px; padding: 10px 18px; font-size: 13px;
+           opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; max-width: 80vw; }
+  .toast.show { opacity: 1; }
+  .toast.err { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LocalMap</h1>
+    <span class="ver" id="ver"></span>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="label">代理监听</div><div class="value" id="proxyAddr">—</div></div>
+    <div class="card"><div class="label">hosts 托管</div><div class="value" id="hostsState">—</div></div>
+    <div class="card"><div class="label">本地 HTTPS</div><div class="value" id="httpsState">—</div></div>
+    <div class="card"><div class="label">开机自启任务</div><div class="value" id="taskState">—</div></div>
+    <div class="card"><div class="label">运行身份</div><div class="value" id="runAs">—</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>域名映射</h2>
+    <div id="mappingList"></div>
+    <form class="add-form" id="addForm" style="margin-top:16px">
+      <input class="domain" id="inDomain" placeholder="域名，如 myapp.local" autocomplete="off">
+      <input class="target" id="inTarget" placeholder="目标，如 127.0.0.1:3000" autocomplete="off">
+      <button type="submit" class="primary">添加映射</button>
+    </form>
+    <div class="hint">添加后自动写入 hosts 并即时生效；访问 <b>http://域名/</b>（不带端口）即可打开目标服务。域名仅在本机解析。</div>
+  </div>
+
+  <div class="panel">
+    <h2>本地 HTTPS（去掉浏览器"不安全"标识）</h2>
+    <div class="task-row">
+      <span id="httpsDesc" style="color:var(--muted)">—</span>
+      <button id="btnHttps" class="primary">启用本地 HTTPS</button>
+      <button id="btnHttpsOff" class="danger">关闭并删除证书</button>
+    </div>
+    <div class="hint">启用后自动生成本地 CA 并装入系统信任存储（无弹窗），按域名签发证书；http 地址会 308 跳转到 https。Firefox 使用独立证书库，需在其设置中手动信任 <code>data/ca.crt</code>。</div>
+  </div>
+
+  <div class="panel">
+    <h2>开机自启（计划任务 <code>LocalMapEngine</code>）</h2>
+    <div class="task-row">
+      <span id="taskDesc" style="color:var(--muted)">—</span>
+      <button id="btnInstall">注册开机自启</button>
+      <button id="btnUninstall" class="danger">删除任务</button>
+    </div>
+    <div class="hint">任务以 SYSTEM 身份运行引擎（无窗口），注册/删除需要引擎本身具有管理员权限。</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__LOCALMAP_TOKEN__";
+const $ = id => document.getElementById(id);
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isErr ? " err" : "");
+  setTimeout(() => t.className = "toast", 2600);
+}
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ "X-LocalMap-Token": TOKEN }, opts.headers);
+  if (opts.body) opts.headers["Content-Type"] = "application/json";
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// 复制：clipboard API 失败时（如 Tauri WebView 权限限制）回退 execCommand
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => toast("已复制 " + text))
+      .catch(() => legacyCopy(text));
+  } else {
+    legacyCopy(text);
+  }
+}
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    toast("已复制 " + text);
+  } catch {
+    toast("复制失败，请手动复制：" + text, true);
+  }
+  document.body.removeChild(ta);
+}
+
+// 打开映射：Tauri 壳里 window.open 被拦截，改走 shell 插件调起系统浏览器
+function openMapping(domain) {
+  const url = currentScheme + "://" + domain + "/";
+  if (window.__TAURI__ && window.__TAURI__.shell) {
+    window.__TAURI__.shell.open(url).catch(e => toast("打开失败：" + e, true));
+    return;
+  }
+  if (!window.open(url, "_blank")) {
+    copyText(url);
+  }
+}
+
+function badge(up) {
+  return up
+    ? '<span class="badge up"><span class="dot ok"></span>目标在线</span>'
+    : '<span class="badge down"><span class="dot bad"></span>目标离线</span>';
+}
+
+let editing = null; // 正在行内编辑的域名
+let currentScheme = "http"; // HTTPS 启用后打开/复制链接用 https
+
+function render(s) {
+  currentScheme = s.httpsEnabled ? "https" : "http";
+  $("ver").textContent = "v" + s.version;
+  $("proxyAddr").textContent = s.proxyAddr;
+  $("hostsState").innerHTML = s.hostsOk
+    ? '<span class="dot ok"></span>已同步'
+    : '<span class="dot bad"></span>' + (s.hostsErr || "未同步");
+  $("httpsState").innerHTML = !s.httpsEnabled
+    ? '<span class="dot warn"></span>未启用'
+    : s.caTrusted
+      ? '<span class="dot ok"></span>已启用 · 证书已信任'
+      : '<span class="dot warn"></span>已启用 · 证书未信任';
+  $("httpsDesc").textContent = !s.httpsEnabled
+    ? "未启用。启用后可通过 https://域名 访问，浏览器不再显示“不安全”。"
+    : s.caTrusted
+      ? "已启用，CA 已被系统信任。请改用 https://域名 访问。"
+      : "已启用，但 CA 未装入系统信任存储，浏览器可能仍提示证书不受信任。";
+  $("btnHttps").disabled = s.httpsEnabled;
+  $("btnHttpsOff").disabled = !s.httpsEnabled;
+  $("taskState").innerHTML = s.taskInstalled
+    ? '<span class="dot ok"></span>已注册（' + (s.taskStatus || "?") + '）'
+    : '<span class="dot warn"></span>未注册';
+  $("runAs").textContent = s.isSystem ? "SYSTEM" : "普通用户";
+  $("taskDesc").textContent = s.taskInstalled
+    ? "已注册，状态：" + (s.taskStatus || "未知")
+    : "未注册。注册后引擎开机自动运行。";
+  $("btnInstall").disabled = s.taskInstalled;
+  $("btnUninstall").disabled = !s.taskInstalled;
+
+  const list = $("mappingList");
+  if (!s.mappings || s.mappings.length === 0) {
+    list.innerHTML = '<div class="empty">还没有映射，在下面添加第一条吧</div>';
+    return;
+  }
+  list.innerHTML = "<table><tr><th>域名</th><th>目标</th><th>状态</th><th></th></tr>" +
+    s.mappings.map(m => editing === m.domain ? `<tr>
+      <td><input class="edit-in" id="editDomain" value="${m.domain}"></td>
+      <td><input class="edit-in mono" id="editTarget" value="${m.target}"></td>
+      <td></td>
+      <td><div class="row-actions">
+        <button class="primary" data-save="${m.domain}">保存</button>
+        <button data-cancel>取消</button>
+      </div></td>
+    </tr>` : `<tr>
+      <td><span class="domain">${m.domain}</span></td>
+      <td><span class="target">${m.target}</span></td>
+      <td>${badge(m.targetUp)}</td>
+      <td><div class="row-actions">
+        <button data-open="${m.domain}">打开</button>
+        <button data-copy="${m.domain}">复制地址</button>
+        <button data-edit="${m.domain}">编辑</button>
+        <button class="danger" data-del="${m.domain}">删除</button>
+      </div></td>
+    </tr>`).join("") + "</table>";
+
+  list.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("删除映射 " + b.dataset.del + "？")) return;
+    try {
+      await api("/api/mappings/" + encodeURIComponent(b.dataset.del), { method: "DELETE" });
+      toast("已删除 " + b.dataset.del);
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  });
+  list.querySelectorAll("[data-open]").forEach(b => b.onclick = () => {
+    openMapping(b.dataset.open);
+  });
+  list.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => {
+    copyText(currentScheme + "://" + b.dataset.copy + "/");
+  });
+  list.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
+    editing = b.dataset.edit;
+    render(s);
+    $("editDomain").focus();
+  });
+  list.querySelectorAll("[data-cancel]").forEach(b => b.onclick = () => {
+    editing = null;
+    render(s);
+  });
+  list.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
+    const oldDomain = b.dataset.save;
+    const domain = $("editDomain").value.trim();
+    const target = $("editTarget").value.trim();
+    if (!domain || !target) return;
+    try {
+      await api("/api/mappings/" + encodeURIComponent(oldDomain), {
+        method: "PUT", body: JSON.stringify({ domain, target })
+      });
+      editing = null;
+      toast("已保存：" + domain);
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+async function refresh() {
+  if (editing !== null) return; // 编辑中不刷新，避免清掉输入
+  try { render(await api("/api/state")); }
+  catch (e) { /* 引擎重启中等情况忽略 */ }
+}
+
+$("addForm").onsubmit = async ev => {
+  ev.preventDefault();
+  const domain = $("inDomain").value.trim();
+  const target = $("inTarget").value.trim();
+  if (!domain || !target) return;
+  try {
+    await api("/api/mappings", { method: "POST", body: JSON.stringify({ domain, target }) });
+    $("inDomain").value = ""; $("inTarget").value = "";
+    toast("映射已生效：" + domain);
+    refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("btnHttps").onclick = async () => {
+  $("btnHttps").disabled = true;
+  try {
+    const r = await api("/api/https/enable", { method: "POST" });
+    toast(r.caTrusted ? "HTTPS 已启用，请改用 https://域名 访问" : "HTTPS 已启用，但 CA 未被系统信任");
+    refresh();
+  } catch (e) {
+    toast(e.message, true);
+    $("btnHttps").disabled = false;
+  }
+};
+
+$("btnHttpsOff").onclick = async () => {
+  if (!confirm("关闭 HTTPS 并删除本地 CA？系统信任存储中的证书也会被移除，https 地址将立即不可用。")) return;
+  $("btnHttpsOff").disabled = true;
+  try {
+    await api("/api/https/disable", { method: "POST" });
+    toast("HTTPS 已关闭，证书已删除");
+    refresh();
+  } catch (e) {
+    toast(e.message, true);
+    refresh();
+  }
+};
+
+$("btnInstall").onclick = async () => {
+  try { await api("/api/task/install", { method: "POST" }); toast("开机自启已注册"); refresh(); }
+  catch (e) { toast(e.message, true); }
+};
+$("btnUninstall").onclick = async () => {
+  if (!confirm("删除开机自启任务？引擎当前进程不受影响，重启电脑后将不再自动运行。")) return;
+  try { await api("/api/task/uninstall", { method: "POST" }); toast("任务已删除"); refresh(); }
+  catch (e) { toast(e.message, true); }
+};
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

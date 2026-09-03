@@ -1,0 +1,9 @@
+# 构建产物
+bin/
+app/
+ui-tauri/dist/
+ui-tauri/node_modules/
+ui-tauri/src-tauri/target/
+
+# 运行时数据（含凭证/私钥，绝不入库）
+data/

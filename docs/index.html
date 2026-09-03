@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LocalMap — 给本机端口一个像样的域名</title>
+<meta name="description" content="LocalMap：Windows 本地域名映射管理工具。把 127.0.0.1:端口 变成 myapp.local，带桌面 GUI、本地 HTTPS、开机自启，不再是黑盒。">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e9ef; --muted: #8b93a3; --accent: #4f8cff; --accent2: #3b6fd4;
+    --green: #34c77b; --red: #e5534b; --yellow: #d9a13b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.75 "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 20px; }
+
+  nav { position: sticky; top: 0; background: rgba(15,17,21,.85); backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border); z-index: 10; }
+  nav .wrap { display: flex; align-items: center; gap: 20px; height: 52px; }
+  nav .brand { font-weight: 700; letter-spacing: .5px; display: flex; align-items: center; gap: 8px; }
+  nav .brand img { width: 24px; height: 24px; border-radius: 6px; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 13px; }
+  nav a:hover { color: var(--text); }
+  nav .spacer { flex: 1; }
+  nav .gh { color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; }
+  nav .gh:hover { background: var(--panel2); }
+
+  header.hero { text-align: center; padding: 72px 0 40px; }
+  .hero h1 { font-size: 40px; letter-spacing: 1px; }
+  .hero h1 .map { color: var(--accent); }
+  .hero .tag { color: var(--muted); font-size: 17px; margin: 12px 0 28px; }
+  .hero .before-after { display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap;
+                        font-family: Consolas, monospace; font-size: 15px; margin-bottom: 30px; }
+  .ba { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 16px; }
+  .ba.bad { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--red); }
+  .ba.good { color: var(--green); border-color: rgba(52,199,123,.4); }
+  .ba-arrow { color: var(--muted); }
+  .btn { display: inline-block; border-radius: 10px; padding: 12px 26px; font-size: 15px; text-decoration: none;
+         border: 1px solid var(--border); color: var(--text); background: var(--panel2); margin: 0 6px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent2); }
+
+  .shot { margin: 44px 0 0; }
+  .shot img { width: 100%; border: 1px solid var(--border); border-radius: 14px;
+              box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+
+  section { padding: 56px 0 8px; }
+  section h2 { font-size: 26px; text-align: center; margin-bottom: 8px; }
+  section .sub { text-align: center; color: var(--muted); margin-bottom: 34px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 13.5px; }
+  .card.pain h3::before { content: "✕ "; color: var(--red); }
+  .card.fix h3::before { content: "✓ "; color: var(--green); }
+  .card code, p code, li code { background: var(--panel2); border: 1px solid var(--border); border-radius: 5px;
+                                padding: 1px 6px; font-family: Consolas, monospace; font-size: 12.5px; color: var(--accent); }
+
+  .flow { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;
+          font-family: Consolas, monospace; font-size: 14px; margin: 10px 0 30px; }
+  .flow .node { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; }
+  .flow .node.hl { border-color: var(--accent); color: var(--accent); }
+  .flow .arr { color: var(--muted); }
+
+  ul.tick { list-style: none; max-width: 720px; margin: 0 auto; }
+  ul.tick li { padding: 9px 0 9px 30px; position: relative; border-bottom: 1px dashed var(--border); color: var(--muted); }
+  ul.tick li:last-child { border-bottom: none; }
+  ul.tick li::before { content: "✓"; position: absolute; left: 4px; color: var(--green); font-weight: 700; }
+  ul.tick li b { color: var(--text); font-weight: 600; }
+
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; }
+  summary { cursor: pointer; padding: 14px 18px; font-weight: 600; font-size: 14.5px; }
+  details .body { padding: 0 18px 16px; color: var(--muted); font-size: 13.5px; }
+
+  footer { border-top: 1px solid var(--border); margin-top: 64px; padding: 28px 0 40px;
+           text-align: center; color: var(--muted); font-size: 13px; }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="brand"><img src="logo.png" alt="LocalMap logo">LocalMap</span>
+    <a href="#pain">痛点</a>
+    <a href="#how">原理</a>
+    <a href="#trust">安全</a>
+    <a href="#faq">FAQ</a>
+    <span class="spacer"></span>
+    <a class="gh" href="https://github.com/coconilu/localmap">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <h1>Local<span class="map">Map</span></h1>
+  <p class="tag">给本机端口一个像样的域名 —— Windows 本地域名映射管理工具</p>
+  <div class="before-after">
+    <span class="ba bad">http://127.0.0.1:58628</span>
+    <span class="ba-arrow">→</span>
+    <span class="ba good">https://myapp.local</span>
+  </div>
+  <a class="btn primary" href="https://github.com/coconilu/localmap/releases">下载最新版</a>
+  <a class="btn" href="https://github.com/coconilu/localmap">查看源码</a>
+  <div class="shot"><img src="screenshot.png" alt="LocalMap 管理界面"></div>
+</header>
+
+<section id="pain" class="wrap">
+  <h2>你是不是也遇到过</h2>
+  <p class="sub">本地开发/自托管服务越多，这些琐事越烦人</p>
+  <div class="grid">
+    <div class="card pain">
+      <h3>端口根本记不住</h3>
+      <p>58628 是什么？15173 又是什么？浏览器历史里一排 <code>127.0.0.1:xxxx</code>，每次都要翻半天。</p>
+    </div>
+    <div class="card pain">
+      <h3>手改 hosts 太黑盒</h3>
+      <p>要管理员权限、改完忘了清、残留条目越攒越多，哪行是哪来的完全不知道。</p>
+    </div>
+    <div class="card pain">
+      <h3>换了域名就 403 / WebSocket 401</h3>
+      <p>很多本地服务开了 Host 校验 / DNS-rebinding 防护，用自定义域名访问直接被拒，WebSocket 握手失败。</p>
+    </div>
+    <div class="card pain">
+      <h3>地址栏永远"不安全"</h3>
+      <p>http 明文地址被浏览器打上"不安全"标记，看着难受，某些 API（剪贴板等）在非安全上下文还受限。</p>
+    </div>
+    <div class="card pain">
+      <h3>重启电脑全失效</h3>
+      <p>临时起的反向代理、临时改的 hosts，重启之后又要重新折腾一遍。</p>
+    </div>
+    <div class="card pain">
+      <h3>自己搭反代嫌麻烦</h3>
+      <p>Caddy/nginx 能干这事，但要写配置、管进程、处理证书——为了一个域名映射，值吗？</p>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="wrap">
+  <h2>LocalMap 怎么解决</h2>
+  <p class="sub">一个常驻引擎 + 一个桌面 GUI，全部可视化，不再是黑盒</p>
+  <div class="flow">
+    <span class="node">浏览器<br>myapp.local</span>
+    <span class="arr">→</span>
+    <span class="node hl">LocalMap 引擎<br>127.0.0.1:80 / :443</span>
+    <span class="arr">→</span>
+    <span class="node">目标服务<br>127.0.0.1:58628</span>
+  </div>
+  <div class="grid">
+    <div class="card fix">
+      <h3>映射表 GUI 管理</h3>
+      <p>域名 ↔ 端口一表看清，增删改即时生效；桌面 app 一键"打开/复制地址"。</p>
+    </div>
+    <div class="card fix">
+      <h3>hosts 受管区块，可审计</h3>
+      <p>只写 <code># &gt;&gt;&gt; LOCALMAP &lt;&lt;&lt;</code> 标记之间的区块，绝不动你其它条目；区块内容随时可查。</p>
+    </div>
+    <div class="card fix">
+      <h3>自动绕过 Host/Origin 校验</h3>
+      <p>转发时把 Host 改写为目标地址、同源 Origin 改写为目标源，WebSocket/SSE 原生透传，403/401 消失。</p>
+    </div>
+    <div class="card fix">
+      <h3>一键本地 HTTPS</h3>
+      <p>自签 CA 装入系统信任存储（无弹窗），按域名自动签发证书，http 自动 308 跳转 https，"不安全"标识消失。</p>
+    </div>
+    <div class="card fix">
+      <h3>开机自启，重启不丢</h3>
+      <p>计划任务以 SYSTEM 身份常驻引擎（无窗口），重启后域名、HTTPS 全部自动恢复。</p>
+    </div>
+    <div class="card fix">
+      <h3>完整闭环，随时反悔</h3>
+      <p>"关闭并删除证书"一键回滚：停 443、删系统 CA、删证书文件。计划任务也可一键删除。</p>
+    </div>
+  </div>
+</section>
+
+<section id="trust" class="wrap">
+  <h2>为什么可以放心用</h2>
+  <p class="sub">本地工具的底线：不联网、不越权、可审计、可回滚</p>
+  <ul class="tick">
+    <li><b>只监听 127.0.0.1</b> —— 代理和控制 API 都不绑 LAN/公网地址，局域网其它设备摸不到。</li>
+    <li><b>变更 API 需 token 鉴权</b> —— 自定义请求头鉴权，天然免疫浏览器表单 CSRF。</li>
+    <li><b>控制 API 校验 Host 头</b> —— 只响应 <code>127.0.0.1</code> / <code>localhost</code> / <code>localmap.test</code>，拦截 DNS-rebinding 窃取 token。</li>
+    <li><b>不削弱目标服务的防护</b> —— 只有同源 Origin 才改写，第三方站点的跨域请求原样转发，仍会被目标服务拒绝。</li>
+    <li><b>hosts 改动限定在受管区块</b> —— 只增删自己标记之间的行，其它内容一个字不动。</li>
+    <li><b>本地 CA 完全受你控制</b> —— 证书和私钥只存在本机 <code>data/</code> 目录，一键即可从系统信任存储彻底删除。</li>
+    <li><b>零依赖、全开源（MIT）</b> —— 引擎是单文件 Go 程序（仅标准库），桌面壳是 Tauri，每一行都能审。</li>
+  </ul>
+</section>
+
+<section id="faq" class="wrap">
+  <h2>常见问题</h2>
+  <p class="sub"></p>
+  <details open>
+    <summary>需要管理员权限吗？</summary>
+    <div class="body">桌面 app 本身不需要。引擎需要（绑定 80/443 端口、写 hosts），所以推荐在 app 里一键注册计划任务，让引擎以 SYSTEM 身份常驻，之后日常使用无需任何提权。</div>
+  </details>
+  <details>
+    <summary>Firefox 能用 https 吗？</summary>
+    <div class="body">Firefox 使用独立证书库，不信任系统根存储。需要在 设置 → 隐私与安全 → 证书 → 导入 中手动信任 <code>data/ca.crt</code>。Chrome/Edge 无需任何操作。</div>
+  </details>
+  <details>
+    <summary>80 或 443 端口被占了怎么办？</summary>
+    <div class="body">引擎启动失败时会在日志里说明。常见占用方是 IIS、Skype、Docker 或其它反代，停掉它们或改端口后重试即可。</div>
+  </details>
+  <details>
+    <summary>和 Caddy / nginx 有什么区别？</summary>
+    <div class="body">它们是通用反代，LocalMap 是专门为"本机端口 ↔ 域名"场景做的：hosts 自动同步、Host/Origin 自动改写、本地 CA 自动签发与信任、桌面 GUI、开机自启——全部开箱即用，不用写一行配置。</div>
+  </details>
+  <details>
+    <summary>换域名后目标服务要重新登录？</summary>
+    <div class="body">是的。浏览器的 localStorage 按域名隔离，目标服务（如带 token 的本地 Web UI）第一次用新域名访问时，需要重新走一次它自己的登录/引导流程。http 换 https 同理。</div>
+  </details>
+  <details>
+    <summary>域名会影响公网吗？</summary>
+    <div class="body">不会。hosts 条目只在本机生效，域名不需要真实注册。建议用 <code>.local</code> / <code>.test</code> 这类保留后缀，避免和真实域名冲突。</div>
+  </details>
+</section>
+
+<footer>
+  <div class="wrap">
+    LocalMap · MIT License · <a href="https://github.com/coconilu/localmap">GitHub</a><br>
+    本地工具，不出网、不收集任何数据。
+  </div>
+</footer>
+
+</body>
+</html>

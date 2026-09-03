@@ -1,0 +1,17 @@
+[package]
+name = "localmap"
+version = "0.1.0"
+description = "LocalMap — 本地域名映射管理"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
