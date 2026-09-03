@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
+        with:
+          cache-dependency-path: engine/go.mod
       - name: Go vet & build
         run: |
           cd engine

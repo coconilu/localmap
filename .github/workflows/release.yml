@@ -32,6 +32,8 @@ jobs:
 
       - name: Setup Go
         uses: actions/setup-go@v6
+        with:
+          cache-dependency-path: engine/go.mod
 
       - name: Bump version & changelog (via auto-merged PR)
         id: bump
