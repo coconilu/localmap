@@ -86,3 +86,15 @@ npm run build                                  # release exe（--no-bundle）
 ```
 
 引擎 CLI：`-install` / `-uninstall` 注册或删除开机自启计划任务（需管理员）。
+
+## 发布与自动更新
+
+- 桌面 app 内置 updater：启动时 + 每 30 分钟检查 GitHub Releases 的 `latest.json`，
+  发现新版本右下角弹出提示，一键下载安装（NSIS 安装器接管并自动重启）。
+- 发版走 GitHub Actions：Actions → Release → Run workflow，选 patch/minor/major。
+  工作流自动 bump 三处版本号（`ui-tauri/package.json`、`tauri.conf.json`、`engine/main.go`）
+  + 生成 CHANGELOG（走 PR 合并回 main），然后构建引擎 + NSIS 安装包、minisign 签名、
+  生成 latest.json 并发布 Release。
+- 签名私钥存于仓库 Secrets（`TAURI_SIGNING_PRIVATE_KEY` / `..._PASSWORD`），
+  公钥写死在 `tauri.conf.json`；本地构建不需要密钥（`createUpdaterArtifacts` 仅发布构建开启）。
+- CI：PR 与 main 推送自动跑 `go vet && go build`（引擎）和 `cargo check`（桌面壳）。

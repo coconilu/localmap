@@ -1,9 +1,10 @@
 # 构建产物
 bin/
 app/
-ui-tauri/dist/
 ui-tauri/node_modules/
 ui-tauri/src-tauri/target/
+# 引擎二进制由 CI/本地 Go 构建生成，作为 Tauri bundle 资源，不入库
+ui-tauri/src-tauri/localmap-engine.exe
 
 # 运行时数据（含凭证/私钥，绝不入库）
 data/

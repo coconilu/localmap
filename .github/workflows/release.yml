@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "版本号升级方式（自动更新 CHANGELOG 并提交回 main）"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+
+permissions:
+  contents: write
+  pull-requests: write # bump 步骤需要建 PR 并合并（main 受分支保护，bot 不能直推）
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+
+      - name: Bump version & changelog (via auto-merged PR)
+        id: bump
+        if: inputs.bump != 'none'
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node .github/scripts/bump-version.mjs "$BUMP"
+          VERSION=$(node -p "require('./ui-tauri/package.json').version")
+          BRANCH="chore/release-v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add ui-tauri/package.json ui-tauri/src-tauri/tauri.conf.json engine/main.go CHANGELOG.md
+          git commit -m "chore: release v$VERSION"
+          git push -u origin "$BRANCH"
+          gh pr create --title "chore: release v$VERSION" --body "自动版本号升级（release 工作流）" --base main --head "$BRANCH"
+          gh pr merge --squash --delete-branch "$BRANCH"
+          # 切到合并后的 main 提交，后续构建和打 tag 都基于它
+          git fetch origin main
+          git checkout --detach origin/main
+
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [ -n "${{ steps.bump.outputs.tag }}" ]; then
+            TAG="${{ steps.bump.outputs.tag }}"
+          else
+            TAG="v$(node -p "require('./ui-tauri/package.json').version")"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build engine (Go)
+        run: |
+          cd engine
+          go build -o ../ui-tauri/src-tauri/localmap-engine.exe .
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui-tauri
+
+      - name: Build desktop installer (Tauri)
+        # createUpdaterArtifacts 只在发布构建时开启：它要求签名私钥，
+        # 留在默认配置里会导致本地无密钥时无法构建
+        shell: bash # 默认 pwsh 会吞掉 --config JSON 里的双引号
+        run: cd ui-tauri && npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        env:
+          # updater 签名私钥，存于仓库 Secrets；对应公钥写死在 tauri.conf.json
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Generate updater manifest (latest.json)
+        run: node .github/scripts/gen-latest-json.mjs "${{ steps.release_tag.outputs.tag }}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: LocalMap ${{ steps.release_tag.outputs.tag }}
+          files: |
+            ui-tauri/src-tauri/target/release/bundle/nsis/*.exe
+            ui-tauri/src-tauri/target/release/bundle/nsis/latest.json
