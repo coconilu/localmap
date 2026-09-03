@@ -51,6 +51,8 @@ jobs:
           git checkout -b "$BRANCH"
           git add ui-tauri/package.json ui-tauri/src-tauri/tauri.conf.json engine/main.go CHANGELOG.md
           git commit -m "chore: release v$VERSION"
+          # 上次 attempt 可能已推过同名分支（PR 创建失败中断时），先清掉再推
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           git push -u origin "$BRANCH"
           gh pr create --title "chore: release v$VERSION" --body "自动版本号升级（release 工作流）" --base main --head "$BRANCH"
           gh pr merge --squash --delete-branch "$BRANCH"
