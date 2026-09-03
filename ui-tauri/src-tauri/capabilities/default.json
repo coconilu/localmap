@@ -6,5 +6,10 @@
   "remote": {
     "urls": ["http://127.0.0.1:20190", "http://localmap.test"]
   },
-  "permissions": ["core:default", "shell:allow-open"]
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
+  ]
 }

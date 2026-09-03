@@ -340,23 +340,26 @@ refresh();
 setInterval(refresh, 5000);
 
 // 自动更新：仅桌面壳（Tauri webview）内生效，浏览器访问时跳过。
+// 走 updater 插件的官方 JS API（window.__TAURI__.updater），
+// 权限在 capabilities/default.json 里显式授予；远端 URL 下自定义 command 会被 ACL 拦截。
 // 启动检查一次 + 每 30 分钟轮询；离线或检查失败静默，不打扰用户。
-function tauriInvoke(cmd) {
-  const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-  return inv ? inv(cmd) : Promise.reject(new Error("not in tauri"));
-}
+let pendingUpdate = null;
 function checkAppUpdate() {
-  tauriInvoke("check_app_update").then(v => {
-    if (v) {
-      $("updateVer").textContent = "v" + v;
+  const up = window.__TAURI__ && window.__TAURI__.updater;
+  if (!up) return;
+  up.check().then(u => {
+    if (u) {
+      pendingUpdate = u;
+      $("updateVer").textContent = "v" + u.version;
       $("updateToast").classList.add("show");
     }
-  }).catch(() => {});
+  }).catch(e => console.warn("update check failed:", e));
 }
 $("btnUpdate").onclick = () => {
+  if (!pendingUpdate) return;
   $("btnUpdate").disabled = true;
   $("updateSub").textContent = "正在下载更新…";
-  tauriInvoke("install_app_update").catch(() => {
+  pendingUpdate.downloadAndInstall().catch(() => {
     $("updateSub").textContent = "下载失败，请重试";
     $("btnUpdate").disabled = false;
   });

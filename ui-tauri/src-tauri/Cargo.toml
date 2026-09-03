@@ -1,6 +1,6 @@
 [package]
 name = "localmap"
-version = "0.2.0"
+version = "0.2.1"
 description = "LocalMap — 本地域名映射管理"
 edition = "2021"
 
@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
+# generate_context! 宏展开需要 serde_json 在 crate root
 serde_json = "1"
 
 [profile.release]

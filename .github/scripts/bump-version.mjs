@@ -32,6 +32,13 @@ const engineNext = engineSrc.replace(/const version = "[^"]+"/, `const version =
 if (engineNext === engineSrc) throw new Error('engine/main.go 中未找到 const version 声明');
 writeFileSync(enginePath, engineNext);
 
+// Cargo.toml 的 [package] version（保持与 tauri.conf.json 一致，避免构建日志版本混乱）
+const cargoPath = 'ui-tauri/src-tauri/Cargo.toml';
+const cargoSrc = readFileSync(cargoPath, 'utf8');
+const cargoNext = cargoSrc.replace(/(\[package\][^\[]*?)version = "[^"]+"/, `$1version = "${version}"`);
+if (cargoNext === cargoSrc) throw new Error('Cargo.toml 中未找到 [package] version');
+writeFileSync(cargoPath, cargoNext);
+
 // 收集自上一个 tag 以来的提交，生成 changelog 条目
 let range = null;
 try {
