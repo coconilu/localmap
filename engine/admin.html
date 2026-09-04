@@ -89,7 +89,7 @@
       <input class="target" id="inTarget" placeholder="目标，如 127.0.0.1:3000" autocomplete="off">
       <button type="submit" class="primary">添加映射</button>
     </form>
-    <div class="hint">添加后自动写入 hosts 并即时生效；访问 <b>http://域名/</b>（不带端口）即可打开目标服务。域名仅在本机解析。</div>
+    <div class="hint">添加后自动写入 hosts 并即时生效；访问 <b>http://域名/</b>（不带端口）即可打开目标服务。域名仅在本机解析。同时会把域名加入系统代理绕过列表（见下方「系统代理绕过」面板）。</div>
   </div>
 
   <div class="panel">
@@ -110,6 +110,16 @@
       <button id="btnUninstall" class="danger">删除任务</button>
     </div>
     <div class="hint">任务以 SYSTEM 身份运行引擎（无窗口），注册/删除需要引擎本身具有管理员权限。</div>
+  </div>
+
+  <div class="panel">
+    <h2>系统代理绕过（ProxyOverride）</h2>
+    <div class="task-row">
+      <span id="bypassDesc" style="color:var(--muted)">—</span>
+      <button id="btnBypassOn" class="primary">开启自动同步</button>
+      <button id="btnBypassOff" class="danger">关闭自动同步</button>
+    </div>
+    <div class="hint">开启系统代理（Clash 等）时，浏览器会把映射域名交给代理解析导致无法访问；本功能把映射域名（含 <code>*.域名</code>）自动写入系统代理绕过列表使其直连。引擎每次启动会自愈补回被代理软件覆盖的条目；删除映射只移除 LocalMap 自己写入的条目。</div>
   </div>
 </div>
 
@@ -216,6 +226,11 @@ function render(s) {
     : "未注册。注册后引擎开机自动运行。";
   $("btnInstall").disabled = s.taskInstalled;
   $("btnUninstall").disabled = !s.taskInstalled;
+  $("bypassDesc").textContent = s.proxyBypassSync
+    ? "已开启。映射域名会自动写入系统代理绕过列表，被代理软件覆盖后自动补回。"
+    : "已关闭。开系统代理（Clash 等）时，映射域名可能被代理拦截，出现无法访问。";
+  $("btnBypassOn").disabled = s.proxyBypassSync;
+  $("btnBypassOff").disabled = !s.proxyBypassSync;
 
   const list = $("mappingList");
   if (!s.mappings || s.mappings.length === 0) {
@@ -334,6 +349,23 @@ $("btnUninstall").onclick = async () => {
   if (!confirm("删除开机自启任务？引擎当前进程不受影响，重启电脑后将不再自动运行。")) return;
   try { await api("/api/task/uninstall", { method: "POST" }); toast("任务已删除"); refresh(); }
   catch (e) { toast(e.message, true); }
+};
+
+$("btnBypassOn").onclick = async () => {
+  try {
+    await api("/api/proxy-bypass", { method: "POST", body: JSON.stringify({ enabled: true }) });
+    toast("已开启，映射域名已写入代理绕过列表");
+    refresh();
+  } catch (e) { toast(e.message, true); }
+};
+$("btnBypassOff").onclick = async () => {
+  if (!confirm("关闭系统代理绕过自动同步？关闭后开代理（Clash 等）访问映射域名可能失败。")) return;
+  const cleanup = confirm("是否同时清理 LocalMap 已写入的绕过条目？\n确定 = 清理；取消 = 保留条目、仅关闭同步");
+  try {
+    await api("/api/proxy-bypass", { method: "POST", body: JSON.stringify({ enabled: false, cleanup }) });
+    toast(cleanup ? "已关闭并清理绕过条目" : "已关闭（已写入条目保留）");
+    refresh();
+  } catch (e) { toast(e.message, true); }
 };
 
 refresh();

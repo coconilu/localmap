@@ -46,6 +46,7 @@ type stateResponse struct {
 	IsSystem     bool           `json:"isSystem"`
 	HttpsEnabled bool           `json:"httpsEnabled"`
 	CATrusted    bool           `json:"caTrusted"`
+	BypassSync   bool           `json:"proxyBypassSync"`
 	Mappings     []mappingState `json:"mappings"`
 }
 
@@ -152,6 +153,7 @@ func (e *Engine) ServeMux() http.Handler {
 			IsSystem:     runningAsSystem(),
 			HttpsEnabled: e.httpsOn.Load(),
 			CATrusted:    e.certs != nil && CATrusted(),
+			BypassSync:   loadBypassSettings(e.dataDir).SyncOn,
 			Mappings:     ms,
 		})
 	})
@@ -171,6 +173,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
+		e.syncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true, "created": isNew})
 	})
 
@@ -183,6 +186,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
+		e.syncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -200,6 +204,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
+		e.syncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -274,6 +279,26 @@ func (e *Engine) ServeMux() http.Handler {
 			e.certs = nil
 		}
 		e.httpsOn.Store(false)
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 系统代理绕过自动同步开关：开=立即同步一次；关=cleanup 时清理已写入条目
+	mux.HandleFunc("POST /api/proxy-bypass", func(w http.ResponseWriter, r *http.Request) {
+		if !e.auth(w, r) {
+			return
+		}
+		var req struct {
+			Enabled bool `json:"enabled"`
+			Cleanup bool `json:"cleanup"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "请求体不是合法 JSON", http.StatusBadRequest)
+			return
+		}
+		if err := e.setProxyBypassSync(req.Enabled, req.Cleanup); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
