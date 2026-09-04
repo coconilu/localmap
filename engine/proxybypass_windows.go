@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // 系统代理绕过列表（ProxyOverride）自动同步。
@@ -17,7 +18,12 @@ import (
 // 命中即直连，LocalMap 按「映射什么写什么」维护它：
 //   - 增删映射时同步（API 调用点触发）
 //   - 引擎每次启动时自愈同步（代理软件开关系统代理会整体重写列表，把条目抹掉）
+//   - bypassJanitor 每分钟周期校对：开机自启（SYSTEM 计划任务）先于用户登录，
+//     启动那次同步因没有桌面会话注定失败，靠周期重试补回
+//
 // 权属：只删除自己写入的条目（bypass.json 里记录 owned），用户手动加的同名条目不动。
+// 并发：所有 ProxyOverride 读-改-写与 bypass.json 落盘都经 Engine.bypassMu 串行化
+// （多个 HTTP handler 与 janitor 可能同时触发）。
 
 const (
 	psInternetSettingsHKCU = `Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
@@ -26,8 +32,8 @@ const (
 
 // bypassSettings 持久化到 dataDir/bypass.json
 type bypassSettings struct {
-	SyncOn bool     `json:"syncOn"`       // 自愈同步开关，默认开
-	Owned  []string `json:"owned"`        // LocalMap 写入 ProxyOverride 的条目（权属记录）
+	SyncOn bool     `json:"syncOn"` // 自愈同步开关，默认开
+	Owned  []string `json:"owned"`  // LocalMap 写入 ProxyOverride 的条目（权属记录）
 }
 
 func bypassSettingsPath(dataDir string) string {
@@ -47,12 +53,16 @@ func loadBypassSettings(dataDir string) *bypassSettings {
 func saveBypassSettings(dataDir string, st *bypassSettings) {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
+		log.Printf("[bypass] 序列化设置失败: %v", err)
 		return
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Printf("[bypass] 创建数据目录失败: %v", err)
 		return
 	}
-	_ = os.WriteFile(bypassSettingsPath(dataDir), data, 0644)
+	if err := os.WriteFile(bypassSettingsPath(dataDir), data, 0644); err != nil {
+		log.Printf("[bypass] 写入 bypass.json 失败: %v", err)
+	}
 }
 
 // desiredBypassEntries 每个映射域名对应两条：精确域名 + 通配子域
@@ -67,6 +77,7 @@ func desiredBypassEntries(domains []string) []string {
 // interactiveUserSID 解析当前登录（交互式）用户的 SID。
 // 引擎以 SYSTEM 身份运行时 HKCU 指向 SYSTEM 自己的 hive，必须改写登录用户的
 // HKEY_USERS\<SID>。取 explorer.exe 属主最可靠（有桌面会话才有 explorer）。
+// 注意：多会话（RDP + 本地）时取第一个 explorer 属主，可能不是目标用户。
 func interactiveUserSID() (string, error) {
 	out, err := runHidden("powershell", "-NoProfile", "-Command",
 		"$u=(Get-Process -Name explorer -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1).UserName;"+
@@ -123,27 +134,51 @@ func writeProxyOverride(regPath string, entries []string) error {
 	if err != nil {
 		return &CmdError{Cmd: "reg add ProxyOverride", Out: out, Err: err}
 	}
-	// 通知系统代理设置已变更（让 WinINET/浏览器立刻重读），失败不致命
+	// 通知系统代理设置已变更（让 WinINET/浏览器立刻重读），失败不致命。
+	// 限制：引擎以 SYSTEM（session 0）运行时，该广播只刷新 SYSTEM 自己的
+	// WinINET 状态，用户会话里的浏览器可能要切换网络/重启浏览器后才重读。
 	_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
 	return nil
 }
 
-// syncProxyBypass 自愈同步：把缺失的映射域名补进 ProxyOverride，移除不再映射的
-// owned 条目。开关关闭时直接返回。所有失败只记日志，不影响引擎主流程。
-func (e *Engine) syncProxyBypass() {
+// syncProxyBypass 自愈同步（加锁入口）：把缺失的映射域名补进 ProxyOverride，
+// 移除不再映射的 owned 条目。开关关闭时直接返回 nil。
+func (e *Engine) syncProxyBypass() error {
+	e.bypassMu.Lock()
+	defer e.bypassMu.Unlock()
+	return e.syncProxyBypassLocked()
+}
+
+// logSyncProxyBypass 失败只记日志：映射增删改的主流程不受 bypass 失败影响
+func (e *Engine) logSyncProxyBypass() {
+	if err := e.syncProxyBypass(); err != nil {
+		log.Printf("[bypass] 同步失败: %v", err)
+	}
+}
+
+// bypassJanitor 周期自愈校对。开机自启（SYSTEM 计划任务）时可能还没有登录会话，
+// 启动那次同步注定失败；代理软件之后重写 ProxyOverride 也需要有人补回。
+func (e *Engine) bypassJanitor(interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for range t.C {
+		e.logSyncProxyBypass()
+	}
+}
+
+// syncProxyBypassLocked 是 syncProxyBypass 的锁内实现，调用方必须已持有 bypassMu
+func (e *Engine) syncProxyBypassLocked() error {
 	st := loadBypassSettings(e.dataDir)
 	if !st.SyncOn {
-		return
+		return nil
 	}
 	psPath, regPath, err := proxyOverridePaths()
 	if err != nil {
-		log.Printf("[bypass] 定位用户注册表失败: %v", err)
-		return
+		return fmt.Errorf("定位用户注册表失败: %w", err)
 	}
 	entries, err := readProxyOverride(psPath)
 	if err != nil {
-		log.Printf("[bypass] 读取 ProxyOverride 失败: %v", err)
-		return
+		return fmt.Errorf("读取 ProxyOverride 失败: %w", err)
 	}
 
 	desired := map[string]bool{}
@@ -185,17 +220,24 @@ func (e *Engine) syncProxyBypass() {
 
 	if changed {
 		if err := writeProxyOverride(regPath, entries); err != nil {
-			log.Printf("[bypass] 写入 ProxyOverride 失败: %v", err)
-			return
+			return fmt.Errorf("写入 ProxyOverride 失败: %w", err)
 		}
 		log.Printf("[bypass] ProxyOverride 已同步（受管 %d 条）", len(owned))
 	}
 	st.Owned = sortedKeys(owned)
 	saveBypassSettings(e.dataDir, st)
+	return nil
 }
 
 // cleanupProxyBypass 移除所有 LocalMap 写入的条目（关闭开关且用户选择清理时调用）
 func (e *Engine) cleanupProxyBypass() error {
+	e.bypassMu.Lock()
+	defer e.bypassMu.Unlock()
+	return e.cleanupProxyBypassLocked()
+}
+
+// cleanupProxyBypassLocked 是 cleanupProxyBypass 的锁内实现，调用方必须已持有 bypassMu
+func (e *Engine) cleanupProxyBypassLocked() error {
 	st := loadBypassSettings(e.dataDir)
 	if len(st.Owned) == 0 {
 		return nil
@@ -236,17 +278,19 @@ func (e *Engine) cleanupProxyBypass() error {
 	return nil
 }
 
-// setProxyBypassSync 开关切换：开=立即同步；关=cleanup 时清理已写入条目
+// setProxyBypassSync 开关切换：开=立即同步；关=cleanup 时清理已写入条目。
+// 同步/清理失败会返回错误，由 API 层透传给 GUI 如实提示。
 func (e *Engine) setProxyBypassSync(enabled, cleanup bool) error {
+	e.bypassMu.Lock()
+	defer e.bypassMu.Unlock()
 	st := loadBypassSettings(e.dataDir)
 	st.SyncOn = enabled
 	saveBypassSettings(e.dataDir, st)
 	if enabled {
-		e.syncProxyBypass()
-		return nil
+		return e.syncProxyBypassLocked()
 	}
 	if cleanup {
-		return e.cleanupProxyBypass()
+		return e.cleanupProxyBypassLocked()
 	}
 	return nil
 }

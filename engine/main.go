@@ -67,7 +67,8 @@ func main() {
 		exePath:   exePath,
 	}
 	engine.syncHosts()
-	engine.syncProxyBypass() // 自愈：补回被代理软件覆盖的绕过条目
+	engine.logSyncProxyBypass()          // 自愈：补回被代理软件覆盖的绕过条目
+	go engine.bypassJanitor(time.Minute) // 周期校对（开机启动时可能尚无登录会话）
 
 	// 已启用过 HTTPS（CA 已存在）则自动恢复 443 监听
 	if _, err := os.Stat(filepath.Join(*dataDir, "ca.crt")); err == nil {

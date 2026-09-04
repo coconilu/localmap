@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -27,6 +28,9 @@ type Engine struct {
 	certs     *CertStore
 	httpsOn   atomic.Bool
 	tlsSrv    *http.Server
+	// bypassMu 串行化 ProxyOverride 读-改-写与 bypass.json 落盘
+	//（HTTP handler 与 bypassJanitor 可能并发触发）
+	bypassMu sync.Mutex
 }
 
 type mappingState struct {
@@ -173,7 +177,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
-		e.syncProxyBypass()
+		e.logSyncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true, "created": isNew})
 	})
 
@@ -186,7 +190,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
-		e.syncProxyBypass()
+		e.logSyncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -204,7 +208,7 @@ func (e *Engine) ServeMux() http.Handler {
 			return
 		}
 		e.syncHosts()
-		e.syncProxyBypass()
+		e.logSyncProxyBypass()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
