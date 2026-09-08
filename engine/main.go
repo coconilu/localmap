@@ -155,16 +155,22 @@ func legacyDataDir() string {
 	return filepath.Join(filepath.Dir(exe), "data")
 }
 
-// migrateLegacyData 新目录还没有数据、旧目录有 mappings.json 时整体复制过来
-//（复制而非移动，旧目录留作备份）。robocopy 退出码 <8 均为成功。
+// migrateLegacyData 新目录还没有数据、旧目录有 mappings.json 或 ca.crt 时
+// 整体复制过来（复制而非移动，旧目录留作备份）。CA 也要算入触发条件：
+// 只启用过 HTTPS 但没保存映射的旧数据，不迁移会重建 CA，浏览器证书信任失效。
+// robocopy 退出码 <8 均为成功。
 func migrateLegacyData(newDir, legacyDir string) {
 	if legacyDir == "" || filepath.Clean(newDir) == filepath.Clean(legacyDir) {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(newDir, "mappings.json")); err == nil {
+	has := func(dir, name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return err == nil
+	}
+	if has(newDir, "mappings.json") || has(newDir, "ca.crt") {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "mappings.json")); err != nil {
+	if !has(legacyDir, "mappings.json") && !has(legacyDir, "ca.crt") {
 		return
 	}
 	if err := os.MkdirAll(newDir, 0755); err != nil {

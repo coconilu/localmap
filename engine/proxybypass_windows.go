@@ -169,7 +169,8 @@ func broadcastProxyChange() {
 		_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
 		return
 	}
-	const bt = "LocalMapBroadcast"
+	// 任务名带 PID 后缀，避免并发触发或跨实例互相干扰
+	bt := fmt.Sprintf("LocalMapBroadcast-%d", os.Getpid())
 	tr := `rundll32.exe user32.dll,UpdatePerUserSystemParameters`
 	if out, err := runHidden("schtasks", "/create", "/tn", bt, "/sc", "once", "/st", "00:00",
 		"/ru", user, "/it", "/f", "/tr", tr); err != nil {

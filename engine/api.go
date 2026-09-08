@@ -31,6 +31,9 @@ type Engine struct {
 	certs     *CertStore
 	httpsOn   atomic.Bool
 	tlsSrv    *http.Server
+	// httpsMu 串行化 https enable/disable：检查-置状态在同一临界区，
+	// 避免并发 enable 覆盖 certs/tlsSrv 后状态损坏（UI 显示已关闭实际仍在服务）
+	httpsMu sync.Mutex
 	// bypassMu 串行化 ProxyOverride 读-改-写与 bypass.json 落盘
 	//（HTTP handler 与 bypassJanitor 可能并发触发）
 	bypassMu sync.Mutex
@@ -258,6 +261,8 @@ func (e *Engine) ServeMux() http.Handler {
 		if !e.auth(w, r) {
 			return
 		}
+		e.httpsMu.Lock()
+		defer e.httpsMu.Unlock()
 		if e.httpsOn.Load() {
 			// 数据目录迁移 / 重装后 CA 可能已更换但未装入信任存储
 			//（浏览器报 ERR_CERT_AUTHORITY_INVALID），此处幂等补装
@@ -294,6 +299,8 @@ func (e *Engine) ServeMux() http.Handler {
 		if !e.auth(w, r) {
 			return
 		}
+		e.httpsMu.Lock()
+		defer e.httpsMu.Unlock()
 		if !e.httpsOn.Load() {
 			writeJSON(w, map[string]any{"ok": true, "already": true})
 			return
@@ -360,12 +367,17 @@ func (e *Engine) selfCheck() []checkItem {
 
 	// 2/3. HTTPS 监听与 CA 信任（仅启用 HTTPS 时检查）
 	if e.httpsOn.Load() {
-		ok, detail = probeTLSIdentity(e.domains())
-		item = checkItem{Name: "HTTPS 监听与证书", OK: ok, Detail: detail}
-		if !ok {
-			item.Fix = "443 端口可能被其它程序占用；或在「本地 HTTPS」面板关闭后重新启用"
+		if len(e.domains()) == 0 {
+			// 无映射域名时 GetCertificate 必然拒绝握手，探测只会误报
+			items = append(items, checkItem{Name: "HTTPS 监听与证书", OK: true, Detail: "无映射域名，跳过探测"})
+		} else {
+			ok, detail = probeTLSIdentity(e.domains())
+			item = checkItem{Name: "HTTPS 监听与证书", OK: ok, Detail: detail}
+			if !ok {
+				item.Fix = "443 端口可能被其它程序占用；或在「本地 HTTPS」面板关闭后重新启用"
+			}
+			items = append(items, item)
 		}
-		items = append(items, item)
 
 		trusted := CATrusted()
 		item = checkItem{Name: "CA 已被系统信任", OK: trusted,
@@ -386,9 +398,14 @@ func (e *Engine) selfCheck() []checkItem {
 	items = append(items, item)
 
 	// 5. 系统代理绕过列表覆盖全部映射（系统代理未开启时无需绕过）
-	if proxyEnabled, _ := readProxyEnabled(); !proxyEnabled {
+	proxyEnabled, proxyErr := readProxyEnabled()
+	switch {
+	case proxyErr != nil:
+		// 读不出（如 SYSTEM 运行且尚无登录会话）与"未开启"是两回事，不误报
+		items = append(items, checkItem{Name: "系统代理绕过", OK: true, Detail: "无法读取系统代理状态（可能无登录会话），跳过检查"})
+	case !proxyEnabled:
 		items = append(items, checkItem{Name: "系统代理绕过", OK: true, Detail: "系统代理未开启，无需绕过"})
-	} else {
+	default:
 		missing := e.missingBypassEntries()
 		ok = len(missing) == 0
 		item = checkItem{Name: "系统代理绕过", OK: ok,
@@ -411,7 +428,7 @@ func (e *Engine) selfCheck() []checkItem {
 	default:
 		items = append(items, checkItem{Name: "开机自启", OK: false,
 			Detail: "计划任务指向旧安装 " + taskExe + "，开机后两个实例会抢占端口",
-			Fix:    "在「开机自启」面板点击「注册开机自启」覆盖为当前引擎"})
+			Fix:    "在「开机自启」面板点击「修复为当前引擎」覆盖开机自启"})
 	}
 	return items
 }

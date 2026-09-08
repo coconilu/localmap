@@ -126,6 +126,8 @@
       <button id="btnBypassOff" class="danger">关闭自动同步</button>
     </div>
     <div class="hint">开启系统代理（Clash 等）时，浏览器会把映射域名交给代理解析导致无法访问；本功能把映射域名（含 <code>*.域名</code>）自动写入系统代理绕过列表使其直连。引擎每次启动会自愈补回被代理软件覆盖的条目；删除映射只移除 LocalMap 自己写入的条目。</div>
+  </div>
+
   <div class="panel">
     <h2>自检（模拟浏览器访问链路逐项检查）</h2>
     <div class="task-row">
@@ -355,6 +357,7 @@ $("btnFixCA").onclick = async () => {
     const r = await api("/api/https/enable", { method: "POST" });
     toast(r.caTrusted ? "CA 已装入系统信任存储，刷新浏览器即可" : "CA 仍未被信任（需要管理员权限运行引擎）");
     refresh();
+    runSelfCheck();
   } catch (e) { toast(e.message, true); }
   $("btnFixCA").disabled = false;
 };
@@ -390,7 +393,7 @@ $("btnHttpsOff").onclick = async () => {
 };
 
 $("btnInstall").onclick = async () => {
-  try { await api("/api/task/install", { method: "POST" }); toast("开机自启已注册"); refresh(); }
+  try { await api("/api/task/install", { method: "POST" }); toast("开机自启已注册"); refresh(); runSelfCheck(); }
   catch (e) { toast(e.message, true); }
 };
 $("btnUninstall").onclick = async () => {
