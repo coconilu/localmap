@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -62,6 +63,28 @@ func TaskStatus() (bool, string) {
 		return false, ""
 	}
 	return true, status
+}
+
+// TaskAction 返回计划任务的 exe 路径与参数；未安装返回 ("", "")。
+// 用于检测任务是否指向其它（旧）安装路径——指向旧路径意味着开机
+// 会拉起另一个实例抢端口（见 issue #4）。
+func TaskAction() (exe, args string) {
+	out, err := runHidden("powershell", "-NoProfile", "-Command",
+		"[Console]::OutputEncoding=[Text.Encoding]::UTF8; $a=(Get-ScheduledTask -TaskName '"+taskName+"' -ErrorAction SilentlyContinue).Actions | Select-Object -First 1; if ($a) { $a.Execute + \"`t\" + $a.Arguments }")
+	if err != nil {
+		return "", ""
+	}
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return "", ""
+	}
+	exe, args, _ = strings.Cut(line, "\t")
+	return strings.Trim(strings.TrimSpace(exe), `"`), strings.TrimSpace(args)
+}
+
+// sameExePath 大小写不敏感地比较两个 exe 路径
+func sameExePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 func lastField(fields []string) string {

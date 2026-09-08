@@ -64,6 +64,11 @@
                   box-shadow: 0 8px 28px rgba(0,0,0,.45); max-width: 340px; }
   .update-toast.show { display: flex; }
   .update-toast .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .check { display: flex; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); align-items: baseline; flex-wrap: wrap; }
+  .check:last-child { border-bottom: none; }
+  .check .name { font-weight: 600; flex: none; }
+  .check .detail { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .check .fix { color: var(--yellow); font-size: 12px; flex-basis: 100%; }
 </style>
 </head>
 <body>
@@ -97,6 +102,7 @@
     <div class="task-row">
       <span id="httpsDesc" style="color:var(--muted)">—</span>
       <button id="btnHttps" class="primary">启用本地 HTTPS</button>
+      <button id="btnFixCA" class="primary" style="display:none">修复信任</button>
       <button id="btnHttpsOff" class="danger">关闭并删除证书</button>
     </div>
     <div class="hint">启用后自动生成本地 CA 并装入系统信任存储（无弹窗），按域名签发证书；http 地址会 308 跳转到 https。Firefox 使用独立证书库，需在其设置中手动信任 <code>data/ca.crt</code>。</div>
@@ -120,6 +126,13 @@
       <button id="btnBypassOff" class="danger">关闭自动同步</button>
     </div>
     <div class="hint">开启系统代理（Clash 等）时，浏览器会把映射域名交给代理解析导致无法访问；本功能把映射域名（含 <code>*.域名</code>）自动写入系统代理绕过列表使其直连。引擎每次启动会自愈补回被代理软件覆盖的条目；删除映射只移除 LocalMap 自己写入的条目。</div>
+  <div class="panel">
+    <h2>自检（模拟浏览器访问链路逐项检查）</h2>
+    <div class="task-row">
+      <span style="color:var(--muted)">依次检查：代理端口归属 → HTTPS 证书 → CA 信任 → hosts → 代理绕过 → 开机自启指向。</span>
+      <button id="btnSelfCheck" class="primary">开始自检</button>
+    </div>
+    <div id="selfcheckList" style="margin-top:12px"></div>
   </div>
 </div>
 
@@ -217,14 +230,21 @@ function render(s) {
       : "已启用，但 CA 未装入系统信任存储，浏览器可能仍提示证书不受信任。";
   $("btnHttps").disabled = s.httpsEnabled;
   $("btnHttpsOff").disabled = !s.httpsEnabled;
-  $("taskState").innerHTML = s.taskInstalled
-    ? '<span class="dot ok"></span>已注册（' + (s.taskStatus || "?") + '）'
-    : '<span class="dot warn"></span>未注册';
+  $("btnFixCA").style.display = s.httpsEnabled && !s.caTrusted ? "" : "none";
+  $("taskState").innerHTML = !s.taskInstalled
+    ? '<span class="dot warn"></span>未注册'
+    : s.taskMatch
+      ? '<span class="dot ok"></span>已注册（' + (s.taskStatus || "?") + '）'
+      : '<span class="dot bad"></span>指向旧安装';
   $("runAs").textContent = s.isSystem ? "SYSTEM" : "普通用户";
-  $("taskDesc").textContent = s.taskInstalled
-    ? "已注册，状态：" + (s.taskStatus || "未知")
-    : "未注册。注册后引擎开机自动运行。";
-  $("btnInstall").disabled = s.taskInstalled;
+  $("taskDesc").textContent = !s.taskInstalled
+    ? "未注册。注册后引擎开机自动运行。"
+    : s.taskMatch
+      ? "已注册，状态：" + (s.taskStatus || "未知")
+      : "已注册，但指向旧安装：" + s.taskExe + "。开机后旧引擎会与本实例抢占端口，请修复。";
+  $("taskDesc").style.color = s.taskInstalled && !s.taskMatch ? "var(--red)" : "var(--muted)";
+  $("btnInstall").disabled = s.taskInstalled && s.taskMatch;
+  $("btnInstall").textContent = s.taskInstalled && !s.taskMatch ? "修复为当前引擎" : "注册开机自启";
   $("btnUninstall").disabled = !s.taskInstalled;
   $("bypassDesc").textContent = s.proxyBypassSync
     ? "已开启。映射域名会自动写入系统代理绕过列表，被代理软件覆盖后自动补回。"
@@ -328,6 +348,34 @@ $("btnHttps").onclick = async () => {
   }
 };
 
+// 修复信任：https/enable 对已启用实例幂等补装 CA 到系统信任存储
+$("btnFixCA").onclick = async () => {
+  $("btnFixCA").disabled = true;
+  try {
+    const r = await api("/api/https/enable", { method: "POST" });
+    toast(r.caTrusted ? "CA 已装入系统信任存储，刷新浏览器即可" : "CA 仍未被信任（需要管理员权限运行引擎）");
+    refresh();
+  } catch (e) { toast(e.message, true); }
+  $("btnFixCA").disabled = false;
+};
+
+async function runSelfCheck() {
+  const box = $("selfcheckList");
+  box.innerHTML = '<div class="hint">检查中…</div>';
+  try {
+    const items = await api("/api/selfcheck");
+    box.innerHTML = items.map(c => `<div class="check">
+      <span class="dot ${c.ok ? "ok" : "bad"}"></span>
+      <span class="name">${c.name}</span>
+      <span class="detail">${c.detail || ""}</span>
+      ${c.fix ? `<span class="fix">→ ${c.fix}</span>` : ""}
+    </div>`).join("");
+  } catch (e) {
+    box.innerHTML = '<div class="hint">自检失败：' + e.message + '</div>';
+  }
+}
+$("btnSelfCheck").onclick = runSelfCheck;
+
 $("btnHttpsOff").onclick = async () => {
   if (!confirm("关闭 HTTPS 并删除本地 CA？系统信任存储中的证书也会被移除，https 地址将立即不可用。")) return;
   $("btnHttpsOff").disabled = true;
@@ -370,6 +418,7 @@ $("btnBypassOff").onclick = async () => {
 
 refresh();
 setInterval(refresh, 5000);
+runSelfCheck();
 
 // 自动更新：仅桌面壳（Tauri webview）内生效，浏览器访问时跳过。
 // 走 updater 插件的官方 JS API（window.__TAURI__.updater），

@@ -74,17 +74,32 @@ func desiredBypassEntries(domains []string) []string {
 	return out
 }
 
+// interactiveUserName 返回当前登录（交互式）用户名（DOMAIN\User 形式）。
+// 取 explorer.exe 属主最可靠（有桌面会话才有 explorer）。
+// 注意：多会话（RDP + 本地）时取第一个 explorer 属主，可能不是目标用户。
+func interactiveUserName() (string, error) {
+	out, err := runHidden("powershell", "-NoProfile", "-Command",
+		"$u=(Get-Process -Name explorer -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1).UserName; if ($u) { $u }")
+	user := strings.TrimSpace(out)
+	if err != nil || user == "" {
+		return "", fmt.Errorf("找不到登录用户（无桌面会话？）: %v %s", err, strings.TrimSpace(out))
+	}
+	return user, nil
+}
+
 // interactiveUserSID 解析当前登录（交互式）用户的 SID。
 // 引擎以 SYSTEM 身份运行时 HKCU 指向 SYSTEM 自己的 hive，必须改写登录用户的
-// HKEY_USERS\<SID>。取 explorer.exe 属主最可靠（有桌面会话才有 explorer）。
-// 注意：多会话（RDP + 本地）时取第一个 explorer 属主，可能不是目标用户。
+// HKEY_USERS\<SID>。
 func interactiveUserSID() (string, error) {
+	user, err := interactiveUserName()
+	if err != nil {
+		return "", err
+	}
 	out, err := runHidden("powershell", "-NoProfile", "-Command",
-		"$u=(Get-Process -Name explorer -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1).UserName;"+
-			" if ($u) { (New-Object System.Security.Principal.NTAccount($u)).Translate([System.Security.Principal.SecurityIdentifier]).Value }")
+		"(New-Object System.Security.Principal.NTAccount('"+user+"')).Translate([System.Security.Principal.SecurityIdentifier]).Value")
 	sid := strings.TrimSpace(out)
 	if err != nil || sid == "" {
-		return "", fmt.Errorf("找不到登录用户（无桌面会话？）: %v %s", err, strings.TrimSpace(out))
+		return "", fmt.Errorf("解析用户 SID 失败: %v %s", err, strings.TrimSpace(out))
 	}
 	return sid, nil
 }
@@ -134,11 +149,75 @@ func writeProxyOverride(regPath string, entries []string) error {
 	if err != nil {
 		return &CmdError{Cmd: "reg add ProxyOverride", Out: out, Err: err}
 	}
-	// 通知系统代理设置已变更（让 WinINET/浏览器立刻重读），失败不致命。
-	// 限制：引擎以 SYSTEM（session 0）运行时，该广播只刷新 SYSTEM 自己的
-	// WinINET 状态，用户会话里的浏览器可能要切换网络/重启浏览器后才重读。
-	_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
+	broadcastProxyChange()
 	return nil
+}
+
+// broadcastProxyChange 通知系统代理设置已变更，让 WinINET/浏览器立刻重读。
+// 引擎以 SYSTEM（session 0）运行时，直接 rundll32 只刷新 SYSTEM 自己的
+// WinINET 状态，用户会话里的浏览器收不到；改为以交互式登录用户身份创建
+// 一次性计划任务（/it，无需密码），在用户会话里执行广播，跑完即删。
+// 找不到登录用户时退化为本地 rundll32（失败不致命）。
+func broadcastProxyChange() {
+	if !runningAsSystem() {
+		_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
+		return
+	}
+	user, err := interactiveUserName()
+	if err != nil {
+		log.Printf("[bypass] %v，广播仅刷新 SYSTEM 会话", err)
+		_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
+		return
+	}
+	const bt = "LocalMapBroadcast"
+	tr := `rundll32.exe user32.dll,UpdatePerUserSystemParameters`
+	if out, err := runHidden("schtasks", "/create", "/tn", bt, "/sc", "once", "/st", "00:00",
+		"/ru", user, "/it", "/f", "/tr", tr); err != nil {
+		log.Printf("[bypass] 创建用户会话广播任务失败: %v %s", err, strings.TrimSpace(out))
+		_, _ = runHidden("rundll32", "user32.dll,UpdatePerUserSystemParameters")
+		return
+	}
+	if out, err := runHidden("schtasks", "/run", "/tn", bt); err != nil {
+		log.Printf("[bypass] 触发用户会话广播失败: %v %s", err, strings.TrimSpace(out))
+	}
+	_, _ = runHidden("schtasks", "/delete", "/tn", bt, "/f")
+}
+
+// readProxyEnabled 读取系统代理开关（ProxyEnable）
+func readProxyEnabled() (bool, error) {
+	psPath, _, err := proxyOverridePaths()
+	if err != nil {
+		return false, err
+	}
+	out, err := runHidden("powershell", "-NoProfile", "-Command",
+		"(Get-ItemProperty -Path '"+psPath+"' -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable")
+	if err != nil {
+		return false, &CmdError{Cmd: "Get-ItemProperty ProxyEnable", Out: out, Err: err}
+	}
+	return strings.TrimSpace(out) == "1", nil
+}
+
+// missingBypassEntries 返回 ProxyOverride 中缺失的映射域名条目（自检用）
+func (e *Engine) missingBypassEntries() []string {
+	psPath, _, err := proxyOverridePaths()
+	if err != nil {
+		return nil
+	}
+	entries, err := readProxyOverride(psPath)
+	if err != nil {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, x := range entries {
+		have[strings.ToLower(x)] = true
+	}
+	var missing []string
+	for _, x := range desiredBypassEntries(e.domains()) {
+		if !have[strings.ToLower(x)] {
+			missing = append(missing, x)
+		}
+	}
+	return missing
 }
 
 // syncProxyBypass 自愈同步（加锁入口）：把缺失的映射域名补进 ProxyOverride，

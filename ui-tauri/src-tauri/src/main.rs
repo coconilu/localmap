@@ -18,19 +18,16 @@ fn engine_running() -> bool {
     TcpStream::connect_timeout(&ENGINE_API.parse().unwrap(), Duration::from_millis(300)).is_ok()
 }
 
-/// 引擎未运行时，尝试启动与 app 同目录的 localmap-engine.exe（无窗口）
+/// 引擎未运行时，尝试启动与 app 同目录的 localmap-engine.exe（无窗口）。
+/// 不传 -data：引擎默认使用 %ProgramData%\LocalMap，与开机计划任务
+///（SYSTEM 身份）共享同一份数据，避免双实例各持一份映射（issue #4）。
 fn try_spawn_engine() {
     let Ok(exe) = std::env::current_exe() else { return };
     let engine = exe.with_file_name("localmap-engine.exe");
     if !engine.exists() {
         return;
     }
-    let data = exe
-        .parent()
-        .map(|p| p.join("data"))
-        .unwrap_or_else(|| "data".into());
     let mut cmd = Command::new(engine);
-    cmd.arg("-data").arg(data);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     if cmd.spawn().is_ok() {
