@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 //go:embed admin.html
@@ -28,6 +31,9 @@ type Engine struct {
 	certs     *CertStore
 	httpsOn   atomic.Bool
 	tlsSrv    *http.Server
+	// httpsMu 串行化 https enable/disable：检查-置状态在同一临界区，
+	// 避免并发 enable 覆盖 certs/tlsSrv 后状态损坏（UI 显示已关闭实际仍在服务）
+	httpsMu sync.Mutex
 	// bypassMu 串行化 ProxyOverride 读-改-写与 bypass.json 落盘
 	//（HTTP handler 与 bypassJanitor 可能并发触发）
 	bypassMu sync.Mutex
@@ -43,15 +49,26 @@ type stateResponse struct {
 	Version      string         `json:"version"`
 	ProxyAddr    string         `json:"proxyAddr"`
 	APIAddr      string         `json:"apiAddr"`
+	DataDir      string         `json:"dataDir"`
 	HostsOK      bool           `json:"hostsOk"`
 	HostsErr     string         `json:"hostsErr"`
 	TaskOn       bool           `json:"taskInstalled"`
 	TaskState    string         `json:"taskStatus"`
+	TaskExe      string         `json:"taskExe"`
+	TaskMatch    bool           `json:"taskMatch"`
 	IsSystem     bool           `json:"isSystem"`
 	HttpsEnabled bool           `json:"httpsEnabled"`
 	CATrusted    bool           `json:"caTrusted"`
 	BypassSync   bool           `json:"proxyBypassSync"`
 	Mappings     []mappingState `json:"mappings"`
+}
+
+// checkItem 自检单项结果（GET /api/selfcheck）
+type checkItem struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+	Fix    string `json:"fix,omitempty"`
 }
 
 func loadOrCreateToken(dataDir string) (string, error) {
@@ -138,6 +155,8 @@ func (e *Engine) ServeMux() http.Handler {
 		}
 		hostsOK, hostsErr := HostsInSync(e.domains())
 		taskOn, taskState := TaskStatus()
+		taskExe, _ := TaskAction()
+		taskMatch := !taskOn || taskExe == "" || sameExePath(taskExe, e.exePath)
 		var ms []mappingState
 		for _, m := range e.store.List() {
 			ms = append(ms, mappingState{
@@ -150,10 +169,13 @@ func (e *Engine) ServeMux() http.Handler {
 			Version:      version,
 			ProxyAddr:    e.proxyAddr,
 			APIAddr:      e.apiAddr,
+			DataDir:      e.dataDir,
 			HostsOK:      hostsOK,
 			HostsErr:     hostsErr,
 			TaskOn:       taskOn,
 			TaskState:    taskState,
+			TaskExe:      taskExe,
+			TaskMatch:    taskMatch,
 			IsSystem:     runningAsSystem(),
 			HttpsEnabled: e.httpsOn.Load(),
 			CATrusted:    e.certs != nil && CATrusted(),
@@ -239,7 +261,17 @@ func (e *Engine) ServeMux() http.Handler {
 		if !e.auth(w, r) {
 			return
 		}
+		e.httpsMu.Lock()
+		defer e.httpsMu.Unlock()
 		if e.httpsOn.Load() {
+			// 数据目录迁移 / 重装后 CA 可能已更换但未装入信任存储
+			//（浏览器报 ERR_CERT_AUTHORITY_INVALID），此处幂等补装
+			if e.certs != nil && !CATrusted() {
+				if err := e.certs.InstallCA(); err != nil {
+					http.Error(w, "安装 CA 到信任存储失败（需要管理员权限）: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			writeJSON(w, map[string]any{"ok": true, "already": true, "caTrusted": CATrusted()})
 			return
 		}
@@ -267,6 +299,8 @@ func (e *Engine) ServeMux() http.Handler {
 		if !e.auth(w, r) {
 			return
 		}
+		e.httpsMu.Lock()
+		defer e.httpsMu.Unlock()
 		if !e.httpsOn.Load() {
 			writeJSON(w, map[string]any{"ok": true, "already": true})
 			return
@@ -306,7 +340,138 @@ func (e *Engine) ServeMux() http.Handler {
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
+	// 端到端自检：模拟浏览器访问链路逐项检查，定位"目标在线但打不开"类故障
+	mux.HandleFunc("GET /api/selfcheck", func(w http.ResponseWriter, r *http.Request) {
+		if !e.auth(w, r) {
+			return
+		}
+		writeJSON(w, e.selfCheck())
+	})
+
 	return hostGuard(mux)
+}
+
+// selfCheck 逐项检查：端口归属 → HTTPS 监听与证书签发者 → CA 信任 →
+// hosts 同步 → 代理绕过覆盖 → 开机自启指向。返回顺序即浏览器链路顺序。
+func (e *Engine) selfCheck() []checkItem {
+	var items []checkItem
+
+	// 1. 代理端口由本实例监听（而非被其它进程/另一实例抢占）：
+	// 未映射域名的 404 响应带 "LocalMap:" 前缀，是本引擎的指纹
+	ok, detail := probeProxyOwnership(e.proxyAddr)
+	item := checkItem{Name: "代理端口归属", OK: ok, Detail: detail}
+	if !ok {
+		item.Fix = "另一个程序占用了 " + e.proxyAddr + "；结束占用进程或退出多余的 LocalMap 实例"
+	}
+	items = append(items, item)
+
+	// 2/3. HTTPS 监听与 CA 信任（仅启用 HTTPS 时检查）
+	if e.httpsOn.Load() {
+		if len(e.domains()) == 0 {
+			// 无映射域名时 GetCertificate 必然拒绝握手，探测只会误报
+			items = append(items, checkItem{Name: "HTTPS 监听与证书", OK: true, Detail: "无映射域名，跳过探测"})
+		} else {
+			ok, detail = probeTLSIdentity(e.domains())
+			item = checkItem{Name: "HTTPS 监听与证书", OK: ok, Detail: detail}
+			if !ok {
+				item.Fix = "443 端口可能被其它程序占用；或在「本地 HTTPS」面板关闭后重新启用"
+			}
+			items = append(items, item)
+		}
+
+		trusted := CATrusted()
+		item = checkItem{Name: "CA 已被系统信任", OK: trusted,
+			Detail: map[bool]string{true: "信任存储中存在 LocalMap Local CA", false: "浏览器会报 ERR_CERT_AUTHORITY_INVALID"}[trusted]}
+		if !trusted {
+			item.Fix = "在「本地 HTTPS」面板点击「修复信任」"
+		}
+		items = append(items, item)
+	}
+
+	// 4. hosts 同步
+	hostsOK, hostsErr := HostsInSync(e.domains())
+	item = checkItem{Name: "hosts 托管区块", OK: hostsOK,
+		Detail: map[bool]string{true: "与当前映射一致", false: hostsErr}[hostsOK]}
+	if !hostsOK {
+		item.Fix = "增删任意一条映射会触发重写；仍失败则检查引擎是否有管理员权限"
+	}
+	items = append(items, item)
+
+	// 5. 系统代理绕过列表覆盖全部映射（系统代理未开启时无需绕过）
+	proxyEnabled, proxyErr := readProxyEnabled()
+	switch {
+	case proxyErr != nil:
+		// 读不出（如 SYSTEM 运行且尚无登录会话）与"未开启"是两回事，不误报
+		items = append(items, checkItem{Name: "系统代理绕过", OK: true, Detail: "无法读取系统代理状态（可能无登录会话），跳过检查"})
+	case !proxyEnabled:
+		items = append(items, checkItem{Name: "系统代理绕过", OK: true, Detail: "系统代理未开启，无需绕过"})
+	default:
+		missing := e.missingBypassEntries()
+		ok = len(missing) == 0
+		item = checkItem{Name: "系统代理绕过", OK: ok,
+			Detail: map[bool]string{true: "绕过列表已覆盖全部映射域名", false: "缺少: " + strings.Join(missing, ", ")}[ok]}
+		if !ok {
+			item.Fix = "已触发自愈同步，约 1 分钟内补回；浏览器需重启或切换网络后才会重读"
+			e.logSyncProxyBypass()
+		}
+		items = append(items, item)
+	}
+
+	// 6. 开机自启指向当前安装
+	taskOn, _ := TaskStatus()
+	taskExe, _ := TaskAction()
+	switch {
+	case !taskOn:
+		items = append(items, checkItem{Name: "开机自启", OK: true, Detail: "未注册（不影响当前使用）"})
+	case taskExe == "" || sameExePath(taskExe, e.exePath):
+		items = append(items, checkItem{Name: "开机自启", OK: true, Detail: "指向当前引擎 " + e.exePath})
+	default:
+		items = append(items, checkItem{Name: "开机自启", OK: false,
+			Detail: "计划任务指向旧安装 " + taskExe + "，开机后两个实例会抢占端口",
+			Fix:    "在「开机自启」面板点击「修复为当前引擎」覆盖开机自启"})
+	}
+	return items
+}
+
+// probeProxyOwnership 以未映射域名请求代理端口，响应含 "LocalMap:" 前缀即本引擎
+func probeProxyOwnership(proxyAddr string) (bool, string) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest("GET", "http://"+proxyAddr+"/", nil)
+	if err != nil {
+		return false, err.Error()
+	}
+	req.Host = "selfcheck.invalid"
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, "无法连接 " + proxyAddr + "（" + err.Error() + "）"
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	if strings.Contains(string(body), "LocalMap:") {
+		return true, proxyAddr + " 由本引擎监听"
+	}
+	return false, proxyAddr + " 的响应不含 LocalMap 标识，可能被其它程序占用"
+}
+
+// probeTLSIdentity 与 443 握手，确认对端证书由本引擎的 CA 签发
+func probeTLSIdentity(domains []string) (bool, string) {
+	serverName := "selfcheck.invalid"
+	if len(domains) > 0 {
+		serverName = domains[0]
+	}
+	conn, err := tls.Dial("tcp", "127.0.0.1:443", &tls.Config{
+		InsecureSkipVerify: true, // 只验签发者身份，CA 信任由单独一项检查
+		ServerName:         serverName,
+	})
+	if err != nil {
+		return false, "443 握手失败（" + err.Error() + "）"
+	}
+	defer conn.Close()
+	peers := conn.ConnectionState().PeerCertificates
+	if len(peers) > 0 && peers[0].Issuer.CommonName == caCommonName {
+		return true, "证书由 LocalMap Local CA 签发"
+	}
+	return false, "443 上的证书不是 LocalMap 签发的，端口可能被其它程序占用"
 }
 
 // hostGuard 统一校验 Host 头，拦截 DNS-rebinding 请求

@@ -8,3 +8,4 @@ ui-tauri/src-tauri/localmap-engine.exe
 
 # 运行时数据（含凭证/私钥，绝不入库）
 data/
+engine/localmap-engine.exe
